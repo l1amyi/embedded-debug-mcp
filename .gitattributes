@@ -1,0 +1,4 @@
+# Normalise to LF in the repository; the J-Link command scripts that the server
+# generates at runtime are written with CRLF in code (see src/jlink.ts) and are
+# never committed.
+* text=auto eol=lf
