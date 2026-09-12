@@ -2,3 +2,9 @@ node_modules/
 dist/
 tmp/
 *.log
+
+# NOTE: docs/vendor/ used to be ignored here. It is now committed on purpose:
+# the repository owner was told that SEGGER's licence forbids (re)distribution
+# without written authorisation, and chose to include the vendor documentation
+# anyway. See docs/vendor/NOTICE.md for the provenance and the known conflict.
+# Regenerate at any time with `npm run docs:sync`.

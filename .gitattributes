@@ -2,3 +2,13 @@
 # generates at runtime are written with CRLF in code (see src/jlink.ts) and are
 # never committed.
 * text=auto eol=lf
+
+# Vendor documentation copied from the SEGGER J-Link installation (docs/vendor/).
+# These are byte-for-byte copies of SEGGER's files and their SHA-256 hashes are
+# recorded in docs/reference/vendor-manifest.md, so git must not rewrite their
+# line endings. -text disables all end-of-line conversion; -diff keeps the large
+# generated text files out of diffs. NOTICE.md, which is ours, stays normal text.
+docs/vendor/*.pdf binary
+docs/vendor/*.txt -text -diff
+docs/vendor/*.xml -text -diff
+docs/vendor/*.html -text -diff
