@@ -9,6 +9,12 @@ build.log
 *.uvguix.*
 *.scvd
 
+# Keil's RTE manager regenerates this from the .uvprojx on every build. Verified
+# by deleting it: `UV4 -r` recreates it and still reports 0 errors. Keeping it
+# tracked means every build shows a spurious modification, because Keil rewrites
+# it with CRLF while the repository stores LF.
+MDK-ARM/RTE/
+
 # CMake / GCC build output
 build/
 cmake-build-*/
