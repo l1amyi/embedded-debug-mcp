@@ -1,0 +1,2 @@
+SEGGER J-Link Commander V7.52a (Compiled Jul 28 2021 11:14:10)
+DLL version V7.52a, compiled Jul 28 2021 11:12:51

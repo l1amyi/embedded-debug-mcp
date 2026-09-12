@@ -17,6 +17,12 @@ export interface RunOptions {
   connect?: boolean;
   timeoutMs?: number;
   maxOutputBytes?: number;
+  /**
+   * Output lines matching these patterns are excluded from failure detection.
+   * Used for J-Link messages that report a state rather than an error, such as
+   * "Error: CPU is not halted" in answer to `go` on a running CPU.
+   */
+  benignPatterns?: RegExp[];
 }
 
 export interface RunResult {
@@ -139,6 +145,14 @@ export function runJLink(commands: string[], options: RunOptions = {}): Promise<
   const scriptLines: string[] = [];
   if (options.connect) scriptLines.push("connect");
   scriptLines.push(...normalized);
+  // J-Link Command Strings are reachable only through `exec`, and UM08001 notes
+  // that in Commander they can only run *after* a connection is established.
+  // Both of these are per-session settings, so they are re-sent every time.
+  if (config.disableFlashBreakpoints) scriptLines.push("exec DisableFlashBPs");
+  // `SetRestartOnClose` (UM08001 7.14.1.70): the default is to restart target
+  // execution on close, which has to be disabled in every session because the
+  // setting does not carry over between J-Link processes.
+  if (config.persistHalt) scriptLines.push("exec SetRestartOnClose = 0");
   // Terminator: guarantees the process quits before it can read stdin at EOF.
   scriptLines.push("exit");
 
@@ -222,10 +236,17 @@ export function runJLink(commands: string[], options: RunOptions = {}): Promise<
       stderr = stderr.replace(/\r/g, "");
       const combined = `${stdout}\n${stderr}`;
 
+      // Scan line by line so a benign line can be excluded wholesale. Matching
+      // against the whole text would only yield the matched substring (for
+      // example "Error:"), which is not enough to tell states from failures.
+      const benign = options.benignPatterns ?? [];
       const errors: string[] = [];
-      for (const pattern of HARD_FAILURE_PATTERNS) {
-        const match = pattern.exec(combined);
-        if (match) errors.push(match[0]);
+      for (const line of combined.split("\n")) {
+        if (benign.some((pattern) => pattern.test(line))) continue;
+        for (const pattern of HARD_FAILURE_PATTERNS) {
+          const match = pattern.exec(line);
+          if (match) errors.push(match[0]);
+        }
       }
       if (spawnError) errors.push(spawnError.message);
       if (timedOut) {

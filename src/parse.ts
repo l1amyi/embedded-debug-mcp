@@ -22,17 +22,124 @@ export function parseMemoryDump(text: string): MemoryChunk[] {
 }
 
 /**
- * Parse `regs` output. Requires 8-digit values so probe status lines such as
- * "VTref=3.285V" are not mistaken for registers.
+ * Parse `Regs` / `h` output. Real output mixes several shapes:
+ *
+ *   PC = 08004336, CycleCnt = 00038B41
+ *   SP(R13)= 200003E0, MSP= 20007DC8, PSP= 200003E0, R14(LR) = 08004495
+ *   XPSR = 61000000: APSR = nZCvq, EPSR = 01000000, IPSR = 000 (NoException)
+ *
+ * A trailing `\b` keeps probe lines such as `ITarget=64mA` and `VTref=3.3V`
+ * from being mistaken for registers, since neither is followed by a boundary.
+ * Where a register is printed with an alias, both names are recorded.
  */
 export function parseRegisters(text: string): Record<string, string> {
   const regs: Record<string, string> = {};
-  const pattern = /(?:^|[\s,;])([A-Za-z][A-Za-z0-9_]{0,7})\s*=\s*\b([0-9A-Fa-f]{8})\b/g;
+  const pattern =
+    /(?:^|[\s,;])([A-Za-z][A-Za-z0-9_]{0,7})\s*(?:\(([A-Za-z][A-Za-z0-9_]{0,7})\))?\s*=\s*([0-9A-Fa-f]{2,8})\b/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    regs[match[1]] = match[2].toUpperCase();
+    const value = match[3].toUpperCase();
+    regs[match[1]] = value;
+    if (match[2]) regs[match[2]] = value;
   }
   return regs;
+}
+
+/** `IsHalted` reports one of two sentences; undefined means it said neither. */
+export function parseIsHalted(text: string): boolean | undefined {
+  if (/CPU is not halted/i.test(text)) return false;
+  if (/CPU is halted/i.test(text)) return true;
+  return undefined;
+}
+
+/** `moe` prints "CPU halted because <reason>" / "CPU halted due to <reason>". */
+export function parseModeOfEntry(text: string): string | undefined {
+  const match = /CPU halted (?:because|due to)\s+([^.\n]+)/i.exec(text);
+  return match ? match[1].trim() : undefined;
+}
+
+/**
+ * Register names `rreg`/`wreg` accept, as printed by J-Link itself when given
+ * an illegal name. Verified against J-Link 7.52 on a Cortex-M4.
+ */
+const REGISTERS: string[] = [
+  ...Array.from({ length: 13 }, (_, i) => `R${i}`), // R0-R12
+  "R14", // R13 and R15 are deliberately absent: J-Link rejects them.
+  "XPSR",
+  "MSP",
+  "PSP",
+  "RAZ",
+  "CFBP",
+  "APSR",
+  "EPSR",
+  "IPSR",
+  "PRIMASK",
+  "BASEPRI",
+  "FAULTMASK",
+  "CONTROL",
+  "BASEPRI_MAX",
+  "IAPSR",
+  "EAPSR",
+  "IEPSR",
+  "FPSCR",
+  ...Array.from({ length: 32 }, (_, i) => `FPS${i}`),
+  "CycleCnt",
+  "MSP_NS",
+  "PSP_NS",
+  "MSP_S",
+  "PSP_S",
+  "MSPLIM_S",
+  "PSPLIM_S",
+  "MSPLIM_NS",
+  "PSPLIM_NS",
+  "CFBP_S",
+  "CFBP_NS",
+  "PRIMASK_NS",
+  "BASEPRI_NS",
+  "FAULTMASK_NS",
+  "CONTROL_NS",
+  "BASEPRI_MAX_NS",
+  "PRIMASK_S",
+  "BASEPRI_S",
+  "FAULTMASK_S",
+  "CONTROL_S",
+  "BASEPRI_MAX_S",
+  "MSPLIM",
+  "PSPLIM",
+];
+
+const REGISTER_BY_KEY = new Map(REGISTERS.map((name) => [name.toLowerCase(), name]));
+
+/** Friendly aliases that map onto a name J-Link actually accepts. */
+const REGISTER_ALIASES: Record<string, string> = { lr: "R14" };
+
+/** Names callers reach for that J-Link rejects, with the reason why. */
+const REGISTER_REDIRECTS: Record<string, string> = {
+  pc: "PC cannot be written with wreg; use the SetPC command instead (jlink_write_registers does this automatically), and read it from Regs or R15 in a register dump.",
+  r15:
+    "R15 cannot be written with wreg; use the SetPC command instead (jlink_write_registers does this automatically), and read it from Regs.",
+  sp: "SP has no writable alias; use MSP or PSP. Which one is active is chosen by CONTROL.SPSEL.",
+  r13: "R13 has no writable alias; use MSP or PSP. Which one is active is chosen by CONTROL.SPSEL.",
+};
+
+/**
+ * Resolve a caller-supplied register name to the exact spelling J-Link wants,
+ * or throw an error explaining the right command to use instead.
+ */
+export function normalizeRegisterName(name: string): string {
+  const key = name.trim().toLowerCase();
+  if (!key) throw new JLinkError("Register name is empty.");
+  const redirect = REGISTER_REDIRECTS[key];
+  if (redirect) throw new JLinkError(`Cannot use "${name}" as a register.`, redirect);
+  const alias = REGISTER_ALIASES[key];
+  const resolved = alias ?? REGISTER_BY_KEY.get(key);
+  if (!resolved) {
+    throw new JLinkError(
+      `"${name}" is not a core register J-Link accepts.`,
+      "Valid names include R0-R12, R14 (or LR), MSP, PSP, XPSR, APSR, IPSR, CONTROL, PRIMASK, FAULTMASK, BASEPRI and FPS0-FPS31.",
+    );
+  }
+  return resolved;
 }
 
 export interface ProbeStatus {

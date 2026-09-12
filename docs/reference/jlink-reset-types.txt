@@ -1,0 +1,16 @@
+Syntax: RSetType <type>
+
+        Types:
+        0 = NORMAL (Resets core & peripherals via SYSRESETREQ & VECTRESET bit.)
+        1 = CORE (Resets the core only, not peripherals.)
+        2 = RESETPIN (Resets core & peripherals using RESET pin.)
+        3 = CONNECT UNDER RESET (Halts RESET Pin low when connecting to core)
+        4 = HALT AFTER BTL (Resets core & peripherals, halts CPU after the bootloader.)
+        5 = HALT BEFORE BTL (Resets core & peripherals, halts CPU before the bootloader.)
+        6 = KINETIS (Reset via strategy NORMAL. Watchdog will be disabled after reset)
+        7 = ADI HALT AFTER KERNEL (Resets core & peripherals, halts CPU after the ADI kernel.)
+        8 = CORE AND PERIPHERALS (Resets core & peripherals via SYSRESETREQ bit only.)
+        9 = LPC1200 (Reset via strategy normal. Watchdog will be disabled after reset)
+        10 = S3FN60D (Reset via strategy normal. Watchdog will be disabled after reset)
+        11 = LPC11A (Resets core & peripherals. Performs some special handling which is needed by some LPC11A bootloaders.)
+        12 = Halter after BTL using WP (Resets core & peripherals via SYSRESETREQ. Halts CPU after BTL using WP.)

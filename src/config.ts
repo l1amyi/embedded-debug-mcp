@@ -111,4 +111,43 @@ export const config = {
   get maxOutputBytes(): number {
     return envNumber("JLINK_MAX_OUTPUT", 4 * 1024 * 1024);
   },
+  /**
+   * Keep the target halted after a session ends. J-Link's documented default
+   * (UM08001 7.14.1.70) is to restart target execution when the connection
+   * closes, which silently undoes jlink_halt and makes halt-then-inspect across
+   * calls impossible. Setting this to 1 adds `exec SetRestartOnClose = 0` to
+   * every generated script.
+   *
+   * It must be applied per session: the setting does not carry over between
+   * processes, so a session that omits it resumes the target on close. Off by
+   * default, because leaving a target stopped can be worse than leaving it
+   * running for a device that is expected to keep working.
+   */
+  get persistHalt(): boolean {
+    const raw = process.env.JLINK_PERSIST_HALT?.trim().toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes";
+  },
+  /**
+   * Disable the FlashBP feature, so a breakpoint in flash is always served by a
+   * hardware comparator and J-Link never reprograms a flash sector.
+   *
+   * Measured on an STM32F411CE, an unreached breakpoint forced to software at a
+   * flash address took 6517 ms with FlashBP enabled and 1771 ms with it
+   * disabled. Disabling it also avoids two documented hazards of the flash path:
+   * it borrows the first 2-4 KiB of RAM as a flash loader buffer, and DMA engines
+   * keep running while the CPU is halted, so a DMA touching that RAM corrupts
+   * the programming operation.
+   */
+  get disableFlashBreakpoints(): boolean {
+    const raw = process.env.JLINK_DISABLE_FLASH_BP?.trim().toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes";
+  },
+  /**
+   * Skip checking device names against J-Link's own device list. Useful when
+   * the list export misbehaves, or for a device only J-Link's own config knows.
+   */
+  get skipDeviceValidation(): boolean {
+    const raw = process.env.JLINK_SKIP_DEVICE_VALIDATION?.trim().toLowerCase();
+    return raw === "1" || raw === "true" || raw === "yes";
+  },
 };
