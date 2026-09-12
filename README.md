@@ -19,6 +19,8 @@ The full tool surface is implemented and the server runs end to end. Everything 
 | Faults | `jlink_fault_info` | Induced a controlled `IACCVIOL` HardFault and recovered the stacked frame, reporting the exact faulting PC. |
 | Escape hatch | `jlink_exec`, `jlink_command_reference` | Ran raw Commander commands; the reference is taken from this J-Link's own `?` output. |
 | Flash | `jlink_flash`, `jlink_erase` | Chip erase, range erase, and programming `.bin` / `.hex` / `.srec` with verification — see below. |
+| Source locations | `elf` on every PC-reporting tool | Addresses resolve to `file:line in function`, verified address-by-address against `addr2line`. |
+| Fault localisation | `jlink_fault_info` + `elf` | A deliberate bus fault was traced back to the exact HAL line that dereferenced the bad pointer — see below. |
 
 **Everything is now verified on hardware.** The flash tools were the last gap, tested once the board's firmware was expendable: `scripts/flash-test.mjs` backs the whole flash up, validates the image, then exercises every flash path and finally restores the original byte-for-byte (SHA-256 identical, CPU running again).
 
@@ -262,6 +264,39 @@ Address check: 0x08000000 is inside a flash bank (0x08000000 (512 KiB)).
 That check is advisory rather than a gate, because loading into RAM or into an external bank J-Link does not model is legitimate.
 
 One quirk this release cannot avoid: `loadfile` resets the device when it finishes and its `?` output documents no way to suppress that, so programming resets twice (once inside `loadfile`, once for the explicit run afterwards).
+
+### Source-level reporting
+
+Every tool that reports a program counter takes an optional `elf` argument. Given one, addresses come back as source locations:
+
+```
+Breakpoint hit at 0x0800112E on STM32F411CE, SWD, 4000 kHz.
+Source:  Core/Src/main.c:126 in main
+Code:    led_set(1);
+```
+
+Two layers do this:
+
+1. **A built-in ELF symbol-table reader** (`src/symbols.ts`) — no external tool needed, so it always works, and it also covers firmware built by a toolchain whose binutils are not on PATH (Keil, for instance). It supplies the function name.
+2. **`addr2line`**, when it is on PATH or set via `JLINK_MCP_ADDR2LINE`, for real DWARF file/line. It is the canonical tool and handles DWARF 5, discriminators and inlining correctly, which a hand-rolled `.debug_line` parser would not.
+
+Paths are shortened against a project root derived from the ELF's own location: CMake emits to `build/<config>/` and Keil to `MDK-ARM/<target>/`, both two directories below the project root, so a single rule covers both layouts.
+
+The resolver is checked against `addr2line` address by address — `npm run symbols -- <elf> <addr>...` — and agrees on every case including the boundaries: an address past the end of the image resolves to nothing rather than to the nearest symbol.
+
+`jlink_fault_info` resolves the *stacked* faulting PC, which is the most valuable case of all. That needed one more fix: when a fault is taken in Thread mode on MSP, the C handler's own prologue pushes **below** the exception frame, so the frame sits *above* the current MSP and reading eight words from MSP misses it. The tool now reads a 256-byte window and scans upward, validating each candidate against the executable sections from the ELF so stack garbage cannot produce a false positive. A worked example, from a deliberately corrupted pointer:
+
+```
+Bus fault address (BFAR) = 0xDEADBEE0
+Stacked exception frame at 0x2001FF94 (Thread mode, MSP):
+Faulting instruction PC = 0x0800028C
+Source:  Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c:232 in HAL_RCC_OscConfig
+Code:    if (((RCC_OscInitStruct->OscillatorType) & RCC_OSCILLATORTYPE_HSE) == RCC_OSCILLATORTYPE_HSE)
+The frame sits 4 bytes above MSP, because the fault handler's own prologue pushed below it;
+it was found by scanning.
+```
+
+`npm run debug` runs a complete session end to end, breakpoint and fault included.
 
 ### Fault diagnosis
 

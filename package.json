@@ -21,6 +21,8 @@
     "smoke": "node scripts/smoke.mjs",
     "hardware": "node scripts/hardware-check.mjs",
     "flash": "node scripts/flash-test.mjs",
+    "debug": "node scripts/debug-session.mjs",
+    "symbols": "node scripts/check-symbols.mjs",
     "docs:sync": "node scripts/sync-vendor-docs.mjs"
   },
   "dependencies": {

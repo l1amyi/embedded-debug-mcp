@@ -18,9 +18,18 @@ import {
   decodeHfsr,
   decodeShcsr,
   exceptionName,
-  looksLikeExceptionFrame,
+  scanForExceptionFrame,
   type ExceptionFrame,
 } from "./faults.js";
+import {
+  describeLocation,
+  isExecutableAddress,
+  loadExecutableRanges,
+  readSourceLine,
+  resolveAddresses,
+  shortenPaths,
+  type SourceLocation,
+} from "./symbols.js";
 import { runJLink, type RunOptions, type RunResult } from "./jlink.js";
 import {
   hex,
@@ -99,6 +108,61 @@ async function assertDeviceName(device: string): Promise<void> {
     `J-Link has no device called "${device}", so the target could not be connected.`,
     `${hint} Set JLINK_SKIP_DEVICE_VALIDATION=1 to bypass this check.`,
   );
+}
+
+/**
+ * Resolve addresses to source locations when the caller supplied an ELF.
+ * Without one this is a no-op, so every tool still works address-only and no
+ * toolchain or debug file becomes mandatory.
+ */
+async function resolveLocations(elfPath: string | undefined, addresses: number[]) {
+  if (!elfPath || addresses.length === 0) {
+    return {
+      enabled: false,
+      locations: new Map<number, SourceLocation>(),
+      describe: (_address: number): string | undefined => undefined,
+      code: (_address: number): string | undefined => undefined,
+      json: (_address: number | undefined): SourceLocation | undefined => undefined,
+    };
+  }
+  const locations = await resolveAddresses(elfPath, addresses);
+  const short = shortenPaths(locations.values(), elfPath);
+  return {
+    enabled: true,
+    locations,
+    describe: (address: number) => describeLocation(locations.get(address), short),
+    code: (address: number) => readSourceLine(locations.get(address)),
+    json: (address: number | undefined) => (address === undefined ? undefined : locations.get(address)),
+  };
+}
+
+/** Shared `elf` argument for every tool that reports a program counter. */
+const elfArgument = {
+  elf: z
+    .string()
+    .optional()
+    .describe(
+      "Path to the ELF file carrying debug information, e.g. test_project/build/Debug/test_project.elf. When given, every reported address is resolved to file:line and function. Without it the tool reports raw addresses only.",
+    ),
+};
+
+/**
+ * Format a resolved location for a human line, including the source text when
+ * it can be read. Returns undefined when nothing could be resolved.
+ */
+function locationLines(
+  address: number | undefined,
+  locations: Awaited<ReturnType<typeof resolveLocations>>,
+): string[] {
+  if (!locations.enabled || address === undefined) return [];
+  const described = locations.describe(address);
+  if (!described) {
+    return [`Source:  unresolved for ${hex(address)} (address is outside the ELF, or the file has no line info)`];
+  }
+  const lines = [`Source:  ${described}`];
+  const code = locations.code(address);
+  if (code) lines.push(`Code:    ${code}`);
+  return lines;
 }
 
 /** Run a script and turn a detected failure into a tool error. */
@@ -444,6 +508,7 @@ export function registerTools(server: McpServer): void {
       inputSchema: {
         ...targetShape,
         count: z.number().int().positive().optional().describe("Number of instructions to step. Default 1."),
+        ...elfArgument,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
@@ -457,12 +522,15 @@ export function registerTools(server: McpServer): void {
         });
         if (isToolResult(outcome)) return outcome;
         const registers = parseRegisters(outcome.result.stdout);
-        const pc = registers.PC ?? registers.R15;
+        const pcText = registers.PC ?? registers.R15;
+        const pc = pcText === undefined ? undefined : Number.parseInt(pcText, 16);
         const ip = registers.XPSR;
+        const locations = await resolveLocations(args.elf, pc === undefined ? [] : [pc]);
         const lines = [`Stepped ${count} instruction(s) on ${where(options)}.`];
-        if (pc) lines.push(`PC = 0x${pc}`);
+        if (pc !== undefined) lines.push(`PC = ${hex(pc)}`);
         if (ip) lines.push(`XPSR = 0x${ip}`);
-        return text(`${lines.join("\n")}\n\n${json(registers)}`);
+        lines.push(...locationLines(pc, locations));
+        return text(`${lines.join("\n")}\n\n${json({ ...registers, location: locations.json(pc) })}`);
       }),
   );
 
@@ -587,8 +655,8 @@ export function registerTools(server: McpServer): void {
     {
       title: "Read CPU registers",
       description:
-        "Halt the CPU and read the core registers (R0-R12, R14, SP, PC, XPSR and the floating point registers) plus the current program counter.",
-      inputSchema: { ...targetShape },
+        "Halt the CPU and read the core registers (R0-R12, R14, SP, PC, XPSR and the floating point registers) plus the current program counter. Pass `elf` to also see which source line PC is on.",
+      inputSchema: { ...targetShape, ...elfArgument },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async (args) =>
@@ -601,14 +669,17 @@ export function registerTools(server: McpServer): void {
         if (Object.keys(registers).length === 0) {
           return failure("Could not parse any register values from the J-Link output.", outcome.result);
         }
-        const pc = registers.PC ?? registers.R15;
+        const pcText = registers.PC ?? registers.R15;
+        const pc = pcText === undefined ? undefined : Number.parseInt(pcText, 16);
         const sp = registers.SP ?? registers.R13 ?? registers.MSP;
         const lr = registers.LR ?? registers.R14;
+        const locations = await resolveLocations(args.elf, pc === undefined ? [] : [pc]);
         const lines = [`Registers on ${where(options)}:`];
-        if (pc) lines.push(`PC = 0x${pc}`);
+        if (pc !== undefined) lines.push(`PC = ${hex(pc)}`);
         if (sp) lines.push(`SP = 0x${sp}`);
         if (lr) lines.push(`LR = 0x${lr}`);
-        return text(`${lines.join("\n")}\n\n${json(registers)}`);
+        lines.push(...locationLines(pc, locations));
+        return text(`${lines.join("\n")}\n\n${json({ ...registers, location: locations.json(pc) })}`);
       }),
   );
 
@@ -617,8 +688,8 @@ export function registerTools(server: McpServer): void {
     {
       title: "CPU run state",
       description:
-        "Report whether the CPU is halted or running, and if it is halted, why it stopped. The mode of entry distinguishes a debugger halt from a breakpoint, a vector catch, or an exception. Cheap enough to call before and after any other operation.",
-      inputSchema: { ...targetShape },
+        "Report whether the CPU is halted or running, and if it is halted, why it stopped. The mode of entry distinguishes a debugger halt from a breakpoint, a vector catch, or an exception. Cheap enough to call before and after any other operation. Pass `elf` to also get the source line the CPU is stopped on.",
+      inputSchema: { ...targetShape, ...elfArgument },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) =>
@@ -630,15 +701,18 @@ export function registerTools(server: McpServer): void {
         const stdout = outcome.result.stdout;
         const halted = parseIsHalted(stdout);
         const mode = parseModeOfEntry(stdout);
-        const pc = /CPU is halted \(PC = (0x[0-9A-Fa-f]+)\)/i.exec(stdout)?.[1];
+        const pcText = /CPU is halted \(PC = (0x[0-9A-Fa-f]+)\)/i.exec(stdout)?.[1];
+        const pc = pcText === undefined ? undefined : Number.parseInt(pcText, 16);
+        const locations = await resolveLocations(args.elf, pc === undefined ? [] : [pc]);
 
         const lines: string[] = [];
         if (halted === undefined) lines.push("Could not determine the CPU state from the J-Link output.");
         else lines.push(halted ? "CPU is halted." : "CPU is running.");
-        if (pc) lines.push(`PC = ${pc}`);
+        if (pc !== undefined) lines.push(`PC = ${hex(pc)}`);
+        if (pc !== undefined) lines.push(...locationLines(pc, locations));
         if (mode) lines.push(`Stopped because: ${mode}`);
 
-        return text(`${lines.join("\n")}\n\n${json({ halted, pc, modeOfEntry: mode })}`);
+        return text(`${lines.join("\n")}\n\n${json({ halted, pc: pc === undefined ? undefined : hex(pc), location: locations.json(pc), modeOfEntry: mode })}`);
       }),
   );
 
@@ -894,6 +968,7 @@ export function registerTools(server: McpServer): void {
             "hard (default) forces a hardware breakpoint, which uses a CPU comparator and never touches flash. soft forces a software breakpoint, which J-Link implements by reprogramming the containing flash sector, so it is much slower and consumes flash endurance. Only use soft when hardware comparators are unavailable.",
           ),
         haltOnTimeout: z.boolean().optional().describe("Halt the CPU when no breakpoint is reached, so PC can be read. Default true."),
+        ...elfArgument,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
@@ -928,24 +1003,28 @@ export function registerTools(server: McpServer): void {
         const pc = pcHex === undefined ? undefined : Number.parseInt(pcHex, 16);
         const hit = pc === undefined ? undefined : addresses.find((address) => address === pc);
 
+        // Resolve both the requested breakpoints and wherever the PC ended up,
+        // so the report names the source line rather than only an address.
+        const locations = await resolveLocations(args.elf, [pc, ...addresses].filter((a): a is number => a !== undefined));
+
         const lines: string[] = [];
         if (halted === true && hit !== undefined) {
-          lines.push(`Breakpoint hit at ${hex(hit)} on ${where(options)}.`, `PC = ${hex(hit)}`);
+          lines.push(`Breakpoint hit at ${hex(hit)} on ${where(options)}.`);
         } else if (halted === true) {
           lines.push("The CPU is halted, but not at any requested breakpoint.");
           if (pc !== undefined) lines.push(`PC = ${hex(pc)}`);
           lines.push(`Requested breakpoints: ${addresses.map((address) => hex(address)).join(", ")}`);
         } else {
           lines.push(`No breakpoint was reached within ${waitMs} ms.`);
-          if (pc !== undefined) {
-            lines.push(
-              haltOnTimeout
-                ? `The CPU was halted manually, so PC = ${hex(pc)} is an arbitrary point and not a breakpoint.`
-                : `The CPU is still running; PC = ${hex(pc)} was read while it ran.`,
-            );
+          if (pc !== undefined && !haltOnTimeout) {
+            lines.push(`The CPU is still running; PC = ${hex(pc)} was read while it ran.`);
+          } else if (pc !== undefined) {
+            lines.push(`The CPU was halted manually, so PC = ${hex(pc)} is an arbitrary point and not a breakpoint.`);
           }
         }
+        lines.push(...locationLines(pc, locations));
         if (mode) lines.push(`Stopped because: ${mode}`);
+
         lines.push(
           "",
           json({
@@ -953,6 +1032,8 @@ export function registerTools(server: McpServer): void {
             pc: pc === undefined ? undefined : hex(pc),
             breakpoint: hit === undefined ? undefined : hex(hit),
             modeOfEntry: mode,
+            location: locations.json(pc),
+            breakpointLocation: locations.json(hit),
             registers,
           }),
         );
@@ -965,8 +1046,8 @@ export function registerTools(server: McpServer): void {
     {
       title: "Diagnose a Cortex-M fault",
       description:
-        "Decode why a Cortex-M CPU faulted. Reads the System Control Block fault registers (CFSR, HFSR, MMFAR, BFAR, SHCSR) and, when the CPU sits inside a fault handler, walks the stacked exception frame to report the address of the instruction that faulted. Use this when the CPU looks stuck or PC sits in a HardFault loop.",
-      inputSchema: { ...targetShape },
+        "Decode why a Cortex-M CPU faulted. Reads the System Control Block fault registers (CFSR, HFSR, MMFAR, BFAR, SHCSR) and, when the CPU sits inside a fault handler, walks the stacked exception frame to report the address of the instruction that faulted. Pass `elf` and that address is resolved to the exact source line, which is usually the whole point of the exercise.",
+      inputSchema: { ...targetShape, ...elfArgument },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async (args) =>
@@ -1034,6 +1115,7 @@ export function registerTools(server: McpServer): void {
         let frame: ExceptionFrame | undefined;
         let frameAddress: number | undefined;
         let frameNote: string | undefined;
+        let faultLocation: SourceLocation | undefined;
         if (inHandler && !returnInfo.valid) {
           frameNote =
             "LR does not hold an EXC_RETURN value, so the handler has called a function and the exception frame cannot be located automatically. Break at the handler entry with jlink_run_to to catch the fault fresh.";
@@ -1043,36 +1125,55 @@ export function registerTools(server: McpServer): void {
             frameNote = `${returnInfo.stack} is zero, so the exception frame could not be located.`;
             frameAddress = undefined;
           } else {
-            const frameRead = await execute(["h", `mem32 ${hex(frameAddress)}, ${returnInfo.frameWords}`], {
+            // Read a window rather than exactly frameWords. When the fault is
+            // taken in Thread mode on MSP, the C handler's own prologue pushes
+            // below the exception frame, so the frame sits *above* the current
+            // MSP and an exact read misses it.
+            const windowWords = 64;
+            const frameRead = await execute(["h", `mem32 ${hex(frameAddress)}, ${windowWords}`], {
               ...options,
               connect: true,
             });
             if (isToolResult(frameRead)) return frameRead;
-            const frameWords = parseMemoryDump(frameRead.result.stdout)
+            const window = parseMemoryDump(frameRead.result.stdout)
               .flatMap((chunk) => chunk.values)
               .map((value) => Number.parseInt(value, 16));
-            const candidate = buildExceptionFrame(frameWords);
-            if (candidate && looksLikeExceptionFrame(candidate)) {
-              frame = candidate;
+
+            // With an ELF, a stacked PC that falls outside every executable
+            // section is rejected, which is what makes scanning safe.
+            const codeRanges = args.elf ? loadExecutableRanges(args.elf) : undefined;
+            const found = scanForExceptionFrame(
+              window,
+              codeRanges ? (address) => isExecutableAddress(codeRanges, address) : undefined,
+            );
+            if (found) {
+              frame = found.frame;
+              if (found.offsetWords > 0) {
+                frameNote = `The frame sits ${found.offsetWords * 4} bytes above ${returnInfo.stack}, because the fault handler's own prologue pushed below it; it was found by scanning.`;
+              }
             } else {
-              frameNote = `${returnInfo.stack} does not point at a plausible exception frame. That happens when the fault was taken in Handler mode, because the handler has since pushed onto the same stack.`;
+              frameNote = `No plausible exception frame was found in the ${windowWords * 4} bytes above ${returnInfo.stack}. This usually means the fault was taken in Handler mode (a nested fault), where scanning cannot locate it.`;
             }
           }
         }
 
         if (frame) {
+          const locations = await resolveLocations(args.elf, [frame.pc, frame.lr]);
           lines.push(
             "",
             `Stacked exception frame at ${hex(frameAddress as number)} (${returnInfo.description}):`,
             `Faulting instruction PC = ${hex(frame.pc)}`,
+            ...locationLines(frame.pc, locations),
             `LR at the fault = ${hex(frame.lr)}, xPSR = ${hex(frame.xpsr)}`,
             `R0-R3 = ${[frame.r0, frame.r1, frame.r2, frame.r3].map((value) => hex(value)).join(", ")}, R12 = ${hex(frame.r12)}`,
             "",
             `Read the code at ${hex(frame.pc)} to identify the faulting instruction: jlink_read_memory with width 16 at that address.`,
           );
-        } else if (frameNote) {
+          faultLocation = locations.json(frame.pc);
+        } else if (!frame && frameNote) {
           lines.push("", frameNote);
         }
+        if (frame && frameNote) lines.push("", frameNote);
 
         lines.push(
           "",
@@ -1086,6 +1187,7 @@ export function registerTools(server: McpServer): void {
             excReturn: hex(excReturn),
             activeStack: returnInfo.valid ? returnInfo.stack : "unknown",
             frame: frame ?? null,
+            faultingLocation: faultLocation,
           }),
         );
         return text(lines.join("\n"));

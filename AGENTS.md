@@ -213,6 +213,9 @@ D:\tools\_dist\                             ← 安装包归档（zip 本体，�
 13. **Git Bash 的 `/tmp` 不是 `C:\tmp`**。传给 MCP 工具的 Windows 路径要用 `cygpath -w` 或 `cygpath -m` 转换。另外 **MSYS 会把 `cmd.exe /C` 的 `/C` 当路径转换**，要写成 `cmd.exe //C`。
 14. **GCC 15 起默认 C 标准是 C23**（此前 C17），GCC 官方说这会造成大量老项目编译中断。当前这份 STM32F4 HAL 实测**没有**被影响（0 警告），但若以后出现怪异报错，先加 `-std=gnu11` 排除。
 15. **解压工具会静默损坏大文件。** Git Bash 的 `unzip` 曾把 2.1 MB 的 `ld.exe` 解压成 0 字节，而 `unzip -t` 仍报无错。**不要只信压缩包的完整性测试** —— 要逐条对比归档记录的大小与磁盘实际大小。
+16. **`addr2line` 的输出可能带 ` (discriminator N)` 后缀**。正则必须容忍它，否则整条解析静默失败（实测 `0x08001140` 就这样丢了行号）。
+17. **符号表里 size 为 0 的函数不能当作无界**。GCC 会在 `.text` 末尾放 `_fini`（size 0），若视为无界，整个后续地址空间都会解析成 `_fini`——包括镜像之外的地址。正确做法：取「自身 size、下一个符号地址、所在段结束」三者的最小值。
+18. **故障异常帧不一定正好在当前 SP 上**。若故障发生在 Thread 模式且用 MSP，C 处理程序自己的压栈会把 MSP 推到帧**下方**，于是帧在 MSP **上方**。必须读一段窗口向上扫描，并用 ELF 的可执行段范围校验候选帧（否则栈上的垃圾会误判）。
 ## 6. 代码结构
 
 | 文件 | 职责 |
@@ -224,10 +227,13 @@ D:\tools\_dist\                             ← 安装包归档（zip 本体，�
 | `src/devices.ts` | `ExpDevList` 导出 + XML 补充 + 磁盘缓存 + 模糊搜索 + 器件名校验。 |
 | `src/faults.ts` | Cortex-M 故障寄存器解码 + `EXC_RETURN` 解码 + 异常帧重建。 |
 | `src/parse.ts` | 寄存器/内存/探测状态解析，寄存器名规范化，地址与数值解析。 |
+| `src/symbols.ts` | ELF 符号表解析 + `addr2line` 集成 + 路径缩短 + 可执行段范围。 |
 | `scripts/smoke.mjs` | 无需硬件的端到端测试。 |
 | `scripts/hardware-check.mjs` | 21 项硬件在环测试。 |
 | `scripts/flash-test.mjs` | **破坏性** flash 测试（擦写 + 还原），需 `--yes-destroy-flash`。 |
 | `scripts/verify-blink.mjs` | 烧录 `test_project` 并从调试器验证 PC13 在翻转。 |
+| `scripts/debug-session.mjs` | `npm run debug`：完整调试会话演示（断点 + 精确故障定位）。 |
+| `scripts/check-symbols.mjs` | `npm run symbols -- <elf> <addr>...`：符号解析与 addr2line 逐条对比。 |
 | `scripts/sync-vendor-docs.mjs` | 把本机 J-Link 文档与 CLI 事实收集到 `docs/`。 |
 | `test_project/` | 硬件测试固件：STM32F411CEU6，PC13 LED 2 Hz 闪烁。Keil 与 GCC 两条构建路径。 |
 | `docs/reference/` | 可提交的事实数据（命令列表、复位类型、版本、清单）。 |
@@ -238,6 +244,7 @@ D:\tools\_dist\                             ← 安装包归档（zip 本体，�
 - **SWO / RTT 未实现**。7.52a 的 Commander **没有任何 RTT 命令**（以 `?` 输出为准）；RTT 只能靠 `JLinkRTTLogger.exe` / `JLinkRTTViewer.exe` 或 JLinkARM DLL。SWO 有 `SWOStart`/`SWORead`/`SWOShow` 等命令，可脚本化，但需要 SWO 引脚接线。
 - **`jlink_fault_info` 的异常帧恢复**只在「`LR` 仍持有 `EXC_RETURN`」时可靠（即 `HardFault_Handler: b .` 这种没有压栈/没有调用函数的处理程序）。处理程序里调用过函数就恢复不了，工具会说明并建议改用 `jlink_run_to` 在入口下断点。
 - **Zone / MEM-AP 语法**（`mem32 AHB-AP (AP1):0x20000000, 4`）已在 `?` 输出中确认存在，但没有工具暴露它，本板只有 AP[0]，也无从验证。
+- **嵌套故障（Handler 模式下再次出错）的异常帧定位不到**。此时帧在 MSP 上但已被外层处理程序的压栈破坏，扫描无法区分，工具会明确说明而不是猜。
 
 ## 8. 开发准则
 

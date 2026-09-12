@@ -201,3 +201,35 @@ export function looksLikeExceptionFrame(frame: ExceptionFrame): boolean {
   const thumbBit = (frame.xpsr & (1 << 24)) !== 0;
   return thumbBit && frame.pc !== 0 && frame.pc !== 0xffffffff;
 }
+
+export interface FrameCandidate {
+  frame: ExceptionFrame;
+  /** Offset in words from the stack pointer the window started at. */
+  offsetWords: number;
+}
+
+/**
+ * Search a stack window for the exception frame.
+ *
+ * Reading exactly eight words from the current SP only works when the handler
+ * has not pushed anything. A C handler pushes its own registers first, so on a
+ * Thread-mode fault that uses MSP the frame ends up *above* the current MSP and
+ * a direct read misses it. Scanning upward finds it; the stacked PC is then
+ * checked against the executable ranges, which keeps false positives out of a
+ * window full of unrelated stack garbage.
+ */
+export function scanForExceptionFrame(
+  window: number[],
+  isCodeAddress?: (address: number) => boolean,
+): FrameCandidate | undefined {
+  for (let offsetWords = 0; offsetWords + 8 <= window.length; offsetWords += 1) {
+    const frame = buildExceptionFrame(window.slice(offsetWords, offsetWords + 8));
+    if (!frame || !looksLikeExceptionFrame(frame)) continue;
+    // A fault taken in Thread mode stacks an xPSR whose IPSR field is zero.
+    // Anything else is either a nested fault or random stack content.
+    if ((frame.xpsr & 0x1ff) !== 0) continue;
+    if (isCodeAddress && !isCodeAddress(frame.pc & ~1)) continue;
+    return { frame, offsetWords };
+  }
+  return undefined;
+}
