@@ -70,7 +70,20 @@ cd ..
 HEX="$(cygpath -m "$PWD/test_project/MDK-ARM/test_project/test_project.hex")" node scripts/verify-blink.mjs
 ```
 
-The project ships CMake presets for a GCC toolchain as well; Keil MDK is used here because that is what is installed.
+The project ships CMake presets for a GCC toolchain as well. That path is verified end to end with Arm GNU Toolchain 15.3.1 plus Ninja:
+
+```bash
+export PATH=/path/to/arm-gnu-toolchain-15.3.rel1/bin:$PATH
+cd test_project
+cmake --preset Debug && cmake --build --preset Debug
+arm-none-eabi-objcopy -O ihex build/Debug/test_project.elf build/Debug/test_project.hex
+```
+
+No C23 problems: GCC 15 defaults to C23, which the GCC project warns breaks many older codebases, but this STM32F4 HAL builds clean with 0 warnings. If that ever changes, `-std=gnu11` is the escape hatch.
+
+The `objcopy` step is not optional. J-Link 7.52a's `loadfile` does not accept `.elf`, so `jlink_flash` refuses it with the exact `objcopy` command to run instead.
+
+**Trap worth knowing:** do not unpack that toolchain zip with Git Bash's `unzip`. It can write `arm-none-eabi/bin/ld.exe` (2.1 MB) as a **0-byte file** while `unzip -t` still reports "No errors detected", and the only symptom is `collect2.exe: fatal error: CreateProcess: No such file or directory` at link time. Use 7-Zip or the official installer — or verify afterwards by comparing every zip entry's size against the extracted tree (7360 files, exactly one was damaged here).
 
 `scripts/verify-blink.mjs` is worth reading as a technique: it samples `GPIOC->ODR` **inside a single J-Link session**, using `Sleep` between reads. Sampling across separate tool calls would alias badly against a 250 ms half period and show nothing. It measured 300/200 ms runs, which is exactly how a 250 ms square wave quantises at 100 ms sampling.
 

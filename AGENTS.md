@@ -85,9 +85,37 @@ npm run flash -- --yes-destroy-flash  # 破坏性：擦写 flash，最后自动�
 node scripts/hardware-check.mjs STM32F411CE
 ```
 
-`npm run hardware` 是硬件在环测试（17 项），退出码非 0 表示有问题。**改完代码必须跑它**，并确认 `hardware-check.mjs` 里 `-> ok` 的数量。
+`npm run hardware` 是硬件在环测试（**21 项**），退出码非 0 表示有问题。**改完代码必须跑它**，并确认 `hardware-check.mjs` 里 `-> ok` 的数量。
 
 改动涉及 `src/devices.ts` / `src/faults.ts` / `src/parse.ts` 的纯逻辑时，smoke 测试覆盖不到 —— 需要临时脚本或直接调用。
+
+### 端到端验证（拿真实固件跑一遍）
+
+`test_project/` 是唯一一个「我们知道它应该干什么」的固件，因此是端到端基准。
+
+**方式一：Keil（本机当前用的，实测通过）**
+
+```bash
+cd test_project
+"/c/Keil_v5/UV4/UV4.exe" -b "$(cygpath -w MDK-ARM/test_project.uvprojx)" -j0 -o "$(cygpath -w build.log)"
+cd ..
+HEX="$(cygpath -m "$PWD/test_project/MDK-ARM/test_project/test_project.hex")" node scripts/verify-blink.mjs
+```
+
+**方式二：GCC（已实测通过）**
+
+工具链 **Arm GNU Toolchain 15.3.1** + Ninja。实测 **0 错误 0 警告，没有 C23 问题**：
+
+```bash
+export PATH=/path/to/arm-gnu-toolchain-15.3.rel1/bin:$PATH
+cd test_project
+cmake --preset Debug && cmake --build --preset Debug
+arm-none-eabi-objcopy -O ihex build/Debug/test_project.elf build/Debug/test_project.hex
+```
+
+**⚠️ 不要用 Git Bash 的 `unzip` 解压那个 zip** —— 它把 2.1 MB 的 `arm-none-eabi/bin/ld.exe` 解压成了 **0 字节**，而 `unzip -t` 依旧报 "No errors detected"。唯一症状是链接时报 `collect2.exe: fatal error: CreateProcess: No such file or directory`。用 7-Zip 或官方 `.exe` 安装器；事后可把 zip 条目大小与磁盘逐一对比（实测 7360 个里坏了这 1 个）。
+
+**验证思路很值得复用**：`verify-blink.mjs` 在**单个 J-Link 会话内**用 `Sleep` 间隔连续采样 `mem32`，而不是每次新建进程。后者在 250 ms 半周期下会严重混叠，根本看不出翻转规律。
 
 ## 4. 已验证硬件环境与实测数据
 
@@ -95,7 +123,8 @@ node scripts/hardware-check.mjs STM32F411CE
 - 软件：**J-Link V7.52a**（2021-07-28），Windows
 - 目标：**STM32F411CE**，Cortex-M4 r0p1，CPUID `0x410FC241`，SWD @ 4000 kHz
 - 目标 flash `0x08000000` (512 KiB)，RAM `0x20000000` (128 KiB)
-- 该板固件：初始 SP `0x20007DE8`，Reset_Handler `0x08000339`，主循环紧循环在 `0x08004336`–`0x0800433E` 附近（`run_to` 测试可用它当必定命中的目标）
+- 该板固件：初始 SP `0x20007DE8`，Reset_Handler `0x08000339`，主循环紧循环在 `0x08004336`–`0x0800433E` 附近（`run_to` 测试可用它当必定命中的目标）。**完整备份在 `tmp/flash-backup.bin`（sha256 `e8592443c930f083`）**
+- **测试固件 `test_project/`**：CubeMX 工程，PC13 上 2 Hz LED 闪烁，Keil ARMCC 与 GCC 两条路径都能编译并已在硬件上验证。这是唯一一个「知道预期行为」的固件，所以端到端验证以它为基准。
 
 ### 断点开销（等待 1500 ms 未命中）
 
@@ -148,7 +177,9 @@ node scripts/hardware-check.mjs STM32F411CE
 
 12. **`g` 作用在已运行的 CPU 上会报错** `****** Error: CPU is not halted`。这是**状态报告不是故障**。故障检测因此改成逐行匹配（`benignPatterns`），因为整段匹配只能拿到 `Error:` 这个子串，无法分辨状态与真错误。
 
-13. **Git Bash 的 `/tmp` 不是 `C:\tmp`**。传给 MCP 工具的 Windows 路径要用 `cygpath -w` 或 `cygpath -m` 转换。
+13. **Git Bash 的 `/tmp` 不是 `C:\tmp`**。传给 MCP 工具的 Windows 路径要用 `cygpath -w` 或 `cygpath -m` 转换。另外 **MSYS 会把 `cmd.exe /C` 的 `/C` 当路径转换**，要写成 `cmd.exe //C`。
+14. **GCC 15 起默认 C 标准是 C23**（此前 C17），GCC 官方说这会造成大量老项目编译中断。当前这份 STM32F4 HAL 实测**没有**被影响（0 警告），但若以后出现怪异报错，先加 `-std=gnu11` 排除。
+15. **解压工具会静默损坏大文件。** Git Bash 的 `unzip` 曾把 2.1 MB 的 `ld.exe` 解压成 0 字节，而 `unzip -t` 仍报无错。**不要只信压缩包的完整性测试** —— 要逐条对比归档记录的大小与磁盘实际大小。
 
 ## 6. 代码结构
 
@@ -164,9 +195,11 @@ node scripts/hardware-check.mjs STM32F411CE
 | `scripts/smoke.mjs` | 无需硬件的端到端测试。 |
 | `scripts/hardware-check.mjs` | 21 项硬件在环测试。 |
 | `scripts/flash-test.mjs` | **破坏性** flash 测试（擦写 + 还原），需 `--yes-destroy-flash`。 |
+| `scripts/verify-blink.mjs` | 烧录 `test_project` 并从调试器验证 PC13 在翻转。 |
 | `scripts/sync-vendor-docs.mjs` | 把本机 J-Link 文档与 CLI 事实收集到 `docs/`。 |
+| `test_project/` | 硬件测试固件：STM32F411CEU6，PC13 LED 2 Hz 闪烁。Keil 与 GCC 两条构建路径。 |
 | `docs/reference/` | 可提交的事实数据（命令列表、复位类型、版本、清单）。 |
-| `docs/vendor/` | SEGGER 版权文档，**已 gitignore，绝不提交**。 |
+| `docs/vendor/` | SEGGER 版权文档。**已提交但版权属 SEGGER、不适用 MIT**，详见 §2.1 与 `docs/vendor/NOTICE.md`。 |
 
 ## 7. 尚未验证的区域
 
