@@ -59,6 +59,21 @@ It defaults to `JLINK_DEVICE`, then `STM32F411CE`, and exits non-zero if any che
 npm run flash -- --yes-destroy-flash STM32F411CE
 ```
 
+### End-to-end against real firmware
+
+[`test_project/`](test_project/) is a CubeMX project for this exact board (STM32F411CEU6, PC13 LED) that blinks at 2 Hz. It is the one firmware whose behaviour is known in advance, which makes it the end-to-end fixture: build it, flash it, then prove from the debugger that the pin really toggles.
+
+```bash
+cd test_project
+"/c/Keil_v5/UV4/UV4.exe" -b "$(cygpath -w MDK-ARM/test_project.uvprojx)" -j0 -o "$(cygpath -w build.log)"
+cd ..
+HEX="$(cygpath -m "$PWD/test_project/MDK-ARM/test_project/test_project.hex")" node scripts/verify-blink.mjs
+```
+
+The project ships CMake presets for a GCC toolchain as well; Keil MDK is used here because that is what is installed.
+
+`scripts/verify-blink.mjs` is worth reading as a technique: it samples `GPIOC->ODR` **inside a single J-Link session**, using `Sleep` between reads. Sampling across separate tool calls would alias badly against a 250 ms half period and show nothing. It measured 300/200 ms runs, which is exactly how a 250 ms square wave quantises at 100 ms sampling.
+
 ### Reference documentation
 
 Everything this project depends on for reference lives under `docs/`, collected by:
