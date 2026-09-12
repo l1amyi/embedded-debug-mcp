@@ -124,6 +124,28 @@ D:\tools\_dist\                             ← 安装包归档（zip 本体，�
 
 **工具链不要放 `C:\Program Files`**（路径含空格，会弄坏 `make`/CMake 拼出的命令行）、**不要放 Downloads 或 OneDrive 目录**（易误删 / 会被同步）。
 
+#### 用 Ninja，不要用 make
+
+工程的 `CMakePresets.json` 已经写死 `"generator": "Ninja"`，直接用 preset 就是 Ninja。实测对比（同一台机、同一工具链、全量编译）：
+
+| 生成器 | 全量 | 无改动增量 | 改一个源文件 |
+| --- | --- | --- | --- |
+| **Ninja** | **491 ms** | **95 ms** | **290 ms** |
+| make | 3326 ms | 269 ms | 498 ms |
+
+**make 也能用**（三种配置都实测成功：`MinGW Makefiles` 直接可用；指定 `-DCMAKE_MAKE_PROGRAM=$(command -v make)` 也可；`Unix Makefiles` 也可），但慢约 7 倍，且必须绕开 preset 手动传 `-G`。
+
+#### ⚠️ 两个生成器产出的固件**不同*（哈希不一致）
+
+这不是 bug，但很容易让人误判。已逐层查清：
+
+- **编译参数完全相同**（两边都是 `-O0 -g3`），**段大小与地址完全相同**，所以**代码生成没有差异**；
+- 差异来自**链接时目标文件顺序不同**。Ninja 把 `startup_stm32f411xe.s.obj` 放在最后一个，make 放在第 6 个。配合 `-ffunction-sections -Wl,--gc-sections`，输入顺序决定函数在 `.text` 里的落位，于是向量表和所有跳转目标全变（5988 字节里 4379 字节不同）。
+
+**后果：构建不可复现。** 若需要按哈希校验固件（发布比对、CI 产物对比），必须**固定同一个生成器**。
+
+排查这类「同源码不同哈希」时，最有用的手段是 `objcopy -O binary` 得到纯内存镜像再 `cmp -l` 定位偏移，然后用 `objdump -h` 对比段布局——注意**不要在整个 ELF 上跑 `strings`**，调试段里本来就会有源文件路径，会把你带偏（这个坑本轮踩过）。
+
 **⚠️ 不要用 Git Bash 的 `unzip` 解压那个 zip** —— 它把 2.1 MB 的 `arm-none-eabi/bin/ld.exe` 解压成了 **0 字节**，而 `unzip -t` 依旧报 "No errors detected"。唯一症状是链接时报 `collect2.exe: fatal error: CreateProcess: No such file or directory`。用 7-Zip 或官方 `.exe` 安装器；事后可把 zip 条目大小与磁盘逐一对比（实测 7360 个里坏了这 1 个）。
 
 **验证思路很值得复用**：`verify-blink.mjs` 在**单个 J-Link 会话内**用 `Sleep` 间隔连续采样 `mem32`，而不是每次新建进程。后者在 250 ms 半周期下会严重混叠，根本看不出翻转规律。
