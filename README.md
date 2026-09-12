@@ -18,8 +18,9 @@ The full tool surface is implemented and the server runs end to end. Everything 
 | Breakpoints | `jlink_run_to` | Hit a breakpoint in the firmware's main loop; also verified the timeout path. |
 | Faults | `jlink_fault_info` | Induced a controlled `IACCVIOL` HardFault and recovered the stacked frame, reporting the exact faulting PC. |
 | Escape hatch | `jlink_exec`, `jlink_command_reference` | Ran raw Commander commands; the reference is taken from this J-Link's own `?` output. |
+| Flash | `jlink_flash`, `jlink_erase` | Chip erase, range erase, and programming `.bin` / `.hex` / `.srec` with verification — see below. |
 
-**Not yet verified:** `jlink_flash` and `jlink_erase`. No firmware image was programmed, because doing so would destroy the firmware already on the test board. The command sequences are built the same way as the verified ones, but treat them as untested until you point them at a board you are willing to reflash.
+**Everything is now verified on hardware.** The flash tools were the last gap, tested once the board's firmware was expendable: `scripts/flash-test.mjs` backs the whole flash up, validates the image, then exercises every flash path and finally restores the original byte-for-byte (SHA-256 identical, CPU running again).
 
 Several bugs were found by testing against hardware rather than by reading the documentation:
 
@@ -46,12 +47,17 @@ npm run build
 `npm run smoke` boots the built server over stdio and exercises the tools that need no MCU: `jlink_status`, `jlink_devices`, and the error paths (a misspelled device name, an invalid Commander command).
 
 `npm run hardware` is the hardware-in-the-loop suite. It needs a powered target and it **halts and resets** the CPU, so do not point it at something that must keep running:
-
 ```bash
 node scripts/hardware-check.mjs STM32F411CE
 ```
 
 It defaults to `JLINK_DEVICE`, then `STM32F411CE`, and exits non-zero if any check misbehaves.
+
+`npm run flash` is a separate, **destructive** suite for the flash tools: it erases the target's flash. It requires an explicit flag so it cannot run by accident, backs the flash up first, validates that the image is a plausible Cortex-M image before erasing anything, and restores the original byte-for-byte at the end. A second copy of the backup is written to the git-ignored `tmp/`.
+
+```bash
+npm run flash -- --yes-destroy-flash STM32F411CE
+```
 
 ### Reference documentation
 
@@ -202,6 +208,33 @@ Setting `JLINK_DISABLE_FLASH_BP=1` goes further and turns the FlashBP feature of
 
 On a part that uses DMA heavily, disable flash breakpoints.
 
+### Flash programming
+
+`jlink_flash` and `jlink_erase` are verified end to end by `npm run flash`. That script backs the target's flash up first, refuses to erase unless the backup validates as a plausible Cortex-M image, and restores the original byte-for-byte at the end. What it proved:
+
+| Check | Result |
+| --- | --- |
+| Chip erase leaves the flash blank | yes |
+| A `.bin` with no address is refused | yes |
+| `erase` with only `start` is refused | yes |
+| An unsupported extension is refused up front | yes |
+| `.bin` at an address, verified with `verifybin` | restored byte-identical |
+| `.hex` data lands at the address in the file | yes |
+| `.srec` data lands at the address in the file | yes |
+| Range erase clears only the requested sector | yes |
+| The neighbouring sector and the firmware region stay untouched | yes |
+| The original image is restored with a matching SHA-256, CPU running | yes |
+
+For a `.bin`, the tool additionally cross-checks the load address against the flash and RAM ranges J-Link reports for the device, and says what it found:
+
+```
+Address check: 0x08000000 is inside a flash bank (0x08000000 (512 KiB)).
+```
+
+That check is advisory rather than a gate, because loading into RAM or into an external bank J-Link does not model is legitimate.
+
+One quirk this release cannot avoid: `loadfile` resets the device when it finishes and its `?` output documents no way to suppress that, so programming resets twice (once inside `loadfile`, once for the explicit run afterwards).
+
 ### Fault diagnosis
 
 `jlink_fault_info` reads `SHCSR`, `CFSR`, `HFSR`, `MMFAR` and `BFAR`, decodes every set bit, and — when the CPU is inside a fault handler — follows the `EXC_RETURN` value in `LR` to the stack holding the exception frame and reports the **address of the faulting instruction**. Example from a deliberately induced fault:
@@ -221,9 +254,9 @@ Frame recovery needs `LR` to still hold `EXC_RETURN`, which is true for the comm
 
 ## Known limitations
 
-- **Flash programming is untested.** See Status above.
 - **No persistent session**, so each tool call pays a connection round trip (~200 ms here) and breakpoints cannot outlive a call. Halts outlive a call only with `JLINK_PERSIST_HALT=1`, and even then a bare memory read resumes the CPU.
 - **Flash breakpoints cost seconds and wear flash**, unless you keep to hardware breakpoints. See above.
+- **Programming flash resets the target twice.** This J-Link release's `loadfile` resets the device on completion and its `?` output documents no way to suppress that (the `noreset` keyword in the online documentation belongs to a newer release), so `jlink_flash` cannot help but reset once itself and once again when it runs the CPU afterwards. Harmless, but visible as two resets.
 - **`verify` on flash is only supported for `.bin`** (`verifybin`); other formats rely on J-Link's own load verification.
 - **This J-Link release loads only `.bin`, `.mot`, `.hex` and `.srec`.** The online SEGGER documentation lists `.elf`, `.s19` and `.s37` as well, but that describes a newer J-Link: 7.52a's own `?` output does not. `jlink_flash` rejects other extensions up front with the `objcopy` command needed to convert.
 - **RTT is not reachable through Commander on 7.52a.** Its `?` output lists no RTT commands, so RTT needs `JLinkRTTLogger.exe` or the JLinkARM DLL rather than `jlink_exec`.

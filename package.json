@@ -20,6 +20,7 @@
     "start": "node dist/index.js",
     "smoke": "node scripts/smoke.mjs",
     "hardware": "node scripts/hardware-check.mjs",
+    "flash": "node scripts/flash-test.mjs",
     "docs:sync": "node scripts/sync-vendor-docs.mjs"
   },
   "dependencies": {

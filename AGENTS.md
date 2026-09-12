@@ -81,6 +81,7 @@ npm run build                       # tsc
 npm run docs:sync                   # 收集本机 J-Link 文档到 docs/（见 §2.1）
 npm run smoke                       # 不需要目标板：探测 + 器件库 + 错误路径
 npm run hardware                    # 需要上电的目标板；会暂停并复位 CPU
+npm run flash -- --yes-destroy-flash  # 破坏性：擦写 flash，最后自动还原原镜像
 node scripts/hardware-check.mjs STM32F411CE
 ```
 
@@ -110,6 +111,14 @@ node scripts/hardware-check.mjs STM32F411CE
 ### 器件库
 
 `ExpDevList` 导出 8621 个内置器件；`JLinkDevices.xml` 另有 241 个内置列表没有的名字。缓存于 `%TEMP%/jlink-mcp/device-list.json`，按 JLink.exe 的 mtime 失效。
+
+### Flash 烧录（`npm run flash -- --yes-destroy-flash`）
+
+已完整验证：芯片擦除后全为 0xFF；`.bin` 无地址被拒；`erase` 只给 `start` 被拒；不支持的扩展名被提前拒绝；`.bin` 带地址 + `verifybin` 后与备份逐字节一致；`.hex`/`.srec` 数据落在文件内声明地址；范围擦除只影响目标扇区且不碰邻区与固件区；最后原镜像逐字节还原（SHA-256 一致），CPU 恢复正常运行。
+
+测试脚本先备份整个 flash 并**校验镜像合理性**（初始 SP 落在 SRAM、Reset Handler 落在 flash 且有 Thumb 位），校验不过就拒绝擦除。备份另存一份到 gitignore 的 `tmp/`。
+
+**已知怪癖**：本版本 `loadfile` 完成后会自行复位，且 `?` 输出中没有可抑制它的参数（在线文档里的 `noreset` 属于更新版本），所以烧录过程会出现**两次复位**。无害。
 
 ## 5. 陷阱清单
 
@@ -154,13 +163,13 @@ node scripts/hardware-check.mjs STM32F411CE
 | `src/parse.ts` | 寄存器/内存/探测状态解析，寄存器名规范化，地址与数值解析。 |
 | `scripts/smoke.mjs` | 无需硬件的端到端测试。 |
 | `scripts/hardware-check.mjs` | 21 项硬件在环测试。 |
+| `scripts/flash-test.mjs` | **破坏性** flash 测试（擦写 + 还原），需 `--yes-destroy-flash`。 |
 | `scripts/sync-vendor-docs.mjs` | 把本机 J-Link 文档与 CLI 事实收集到 `docs/`。 |
 | `docs/reference/` | 可提交的事实数据（命令列表、复位类型、版本、清单）。 |
 | `docs/vendor/` | SEGGER 版权文档，**已 gitignore，绝不提交**。 |
 
 ## 7. 尚未验证的区域
 
-- **`jlink_flash` 与 `jlink_erase` 从未在真实硬件上跑过**（不敢破坏测试板上的固件）。命令按文档构造，但**未经验证**。要验证必须先拿到一块可以随便重刷的板子或镜像。
 - **SWO / RTT 未实现**。7.52a 的 Commander **没有任何 RTT 命令**（以 `?` 输出为准）；RTT 只能靠 `JLinkRTTLogger.exe` / `JLinkRTTViewer.exe` 或 JLinkARM DLL。SWO 有 `SWOStart`/`SWORead`/`SWOShow` 等命令，可脚本化，但需要 SWO 引脚接线。
 - **`jlink_fault_info` 的异常帧恢复**只在「`LR` 仍持有 `EXC_RETURN`」时可靠（即 `HardFault_Handler: b .` 这种没有压栈/没有调用函数的处理程序）。处理程序里调用过函数就恢复不了，工具会说明并建议改用 `jlink_run_to` 在入口下断点。
 - **Zone / MEM-AP 语法**（`mem32 AHB-AP (AP1):0x20000000, 4`）已在 `?` 输出中确认存在，但没有工具暴露它，本板只有 AP[0]，也无从验证。
