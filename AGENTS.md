@@ -107,11 +107,22 @@ HEX="$(cygpath -m "$PWD/test_project/MDK-ARM/test_project/test_project.hex")" no
 工具链 **Arm GNU Toolchain 15.3.1** + Ninja。实测 **0 错误 0 警告，没有 C23 问题**：
 
 ```bash
-export PATH=/path/to/arm-gnu-toolchain-15.3.rel1/bin:$PATH
 cd test_project
 cmake --preset Debug && cmake --build --preset Debug
 arm-none-eabi-objcopy -O ihex build/Debug/test_project.elf build/Debug/test_project.hex
 ```
+
+本机的工具链位置（已写入用户级 PATH，直接 `arm-none-eabi-gcc` 就能用）：
+
+```
+D:\tools\arm-gnu-toolchain\current\bin     ← PATH 里只写 current，升级时不用改 PATH
+D:\tools\arm-gnu-toolchain\15.3.rel1        ← 实际内容
+D:\tools\_dist\                             ← 安装包归档（zip 本体，便于重装）
+```
+
+`current` 是指向当前版本的目录联接（`New-Item -ItemType Junction`）。**升级步骤**：新版本解压到同级目录，把联接重指过去即可。
+
+**工具链不要放 `C:\Program Files`**（路径含空格，会弄坏 `make`/CMake 拼出的命令行）、**不要放 Downloads 或 OneDrive 目录**（易误删 / 会被同步）。
 
 **⚠️ 不要用 Git Bash 的 `unzip` 解压那个 zip** —— 它把 2.1 MB 的 `arm-none-eabi/bin/ld.exe` 解压成了 **0 字节**，而 `unzip -t` 依旧报 "No errors detected"。唯一症状是链接时报 `collect2.exe: fatal error: CreateProcess: No such file or directory`。用 7-Zip 或官方 `.exe` 安装器；事后可把 zip 条目大小与磁盘逐一对比（实测 7360 个里坏了这 1 个）。
 
@@ -180,7 +191,6 @@ arm-none-eabi-objcopy -O ihex build/Debug/test_project.elf build/Debug/test_proj
 13. **Git Bash 的 `/tmp` 不是 `C:\tmp`**。传给 MCP 工具的 Windows 路径要用 `cygpath -w` 或 `cygpath -m` 转换。另外 **MSYS 会把 `cmd.exe /C` 的 `/C` 当路径转换**，要写成 `cmd.exe //C`。
 14. **GCC 15 起默认 C 标准是 C23**（此前 C17），GCC 官方说这会造成大量老项目编译中断。当前这份 STM32F4 HAL 实测**没有**被影响（0 警告），但若以后出现怪异报错，先加 `-std=gnu11` 排除。
 15. **解压工具会静默损坏大文件。** Git Bash 的 `unzip` 曾把 2.1 MB 的 `ld.exe` 解压成 0 字节，而 `unzip -t` 仍报无错。**不要只信压缩包的完整性测试** —— 要逐条对比归档记录的大小与磁盘实际大小。
-
 ## 6. 代码结构
 
 | 文件 | 职责 |
