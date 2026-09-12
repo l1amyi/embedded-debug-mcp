@@ -1,4 +1,32 @@
+<!-- TRELLIS:START -->
+# Trellis Instructions
+
+These instructions are for AI assistants working in this project.
+
+This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+
+- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
+- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
+- `.trellis/workspace/` — per-developer journals and session traces
+- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+
+If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+
+If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
+- `.agents/skills/` — reusable Trellis skills
+- `.codex/agents/` — optional custom subagents
+
+Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+
+<!-- TRELLIS:END -->
+
 # AGENTS.md —— 给 AI 编码助手的项目说明
+
+> **顶部的 `<!-- TRELLIS:START --> ... <!-- TRELLIS:END -->` 块由 Trellis 管理**，`trellis init` / `trellis update` 会重写它，**不要手工编辑块内内容**。块外内容 Trellis 承诺保留，本文件从下面「本文件是强制阅读…」开始都属块外。
+>
+> **踩过的坑：`trellis init` 曾把整个 AGENTS.md 覆盖成只有它那个 21 行的块**，下面 258 行的内容全没了。Trellis 自己的契约明写 “Edits outside this block are preserved”，但 `init` 没有遵守。
+>
+> **因此：跑任何 trellis 写操作（`init` / `update` / `upgrade`）前先确认工作区干净**，出事就能 `git checkout -- AGENTS.md` 或从 `git show HEAD:AGENTS.md` 合并回来。
 
 本文件是**强制阅读**的项目背景。它记录了这个 MCP 服务器的架构约束、**已经过硬件验证的事实**、以及一批会让你浪费大量时间的陷阱。修改代码前请先读完「陷阱清单」。
 
