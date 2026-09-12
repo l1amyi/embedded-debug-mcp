@@ -1,0 +1,15 @@
+# Keil MDK build output. The .axf/.hex and the ~60 object files are regenerated
+# by `UV4 -b MDK-ARM/test_project.uvprojx`; only the project files and the small
+# generated headers above are worth keeping.
+MDK-ARM/test_project/
+MDK-ARM/*.lst
+MDK-ARM/*.htm
+*.build_log.htm
+build.log
+*.uvguix.*
+*.scvd
+
+# CMake / GCC build output
+build/
+cmake-build-*/
+CMakeUserPresets.json
